@@ -4,11 +4,11 @@ import random
 
 BACKGROUND_COLOR = "#B1DDC6"
 try:
-    data = pandas.read_csv("data/words_to_learn.csv")
+    data = pandas.read_csv("words_to_learn.csv")
 except FileNotFoundError:
 
-    data = pandas.read_csv("data/marathi words.csv", encoding="utf-16")
-    english = pandas.read_csv("data/english words.csv")
+    data = pandas.read_csv("marathi words.csv", encoding="utf-16")
+    english = pandas.read_csv("english words.csv")
     data = data.join(english["English"])
 
 to_learn = data.to_dict(orient="records")
@@ -50,10 +50,10 @@ window.config(width=800, height=526, pady=30, padx=50, bg=BACKGROUND_COLOR)
 
 flip_timer = window.after(3000, func=flip_card)
 
-card_back_img = PhotoImage(file="images/card_back.png")
-card_front_img = PhotoImage(file="images/card_front.png")
-wrong_img = PhotoImage(file="images/wrong.png")
-right_img = PhotoImage(file="images/right.png")
+card_back_img = PhotoImage(file="card_back.png")
+card_front_img = PhotoImage(file="card_front.png")
+wrong_img = PhotoImage(file="wrong.png")
+right_img = PhotoImage(file="right.png")
 
 card_canvas = Canvas(width=800, height=526, bg=BACKGROUND_COLOR, highlightthickness=0)
 
