@@ -203,3 +203,173 @@ LEFT JOIN FDEMS_FDMS.TICKET_PRIORITY tp
   ON tp.ID = tb.TICKET_PRIORITY_ID
 LEFT JOIN article_counts ac
   ON ac.ticket_id = tb.ID;
+
+
+
+
+
+
+
+
+
+
+
+  /* =========================================================
+   FINAL – MAX OPTIMIZED ORACLE QUERY
+   POWER BI INCREMENTAL REFRESH READY
+
+   ✔ OPEN records     : PROCESS_DATE = 19990101 (always refreshed)
+   ✔ CLOSED records   : PROCESS_DATE = YYYYMMDD (incremental)
+   ✔ Numeric partition pruning (fastest)
+   ✔ No duplicates possible
+   ✔ Safe for multiple refreshes per day
+   ========================================================= */
+
+WITH params AS (
+    SELECT
+        TO_NUMBER(TO_CHAR(:RangeStart, 'YYYYMMDD')) AS RS_NUM,
+        TO_NUMBER(TO_CHAR(:RangeEnd,   'YYYYMMDD')) AS RE_NUM
+    FROM dual
+),
+
+tickets_base AS (
+    SELECT
+        TK.ID,
+        TK.TN,
+        TK.TITLE,
+        TK.QUEUE_ID,
+        TK.CUSTOMER_ID,
+        TK.USER_ID,
+        TK.TAG_ID,
+        TK.TAG_ID_QUERY,
+        TK.TAG_ID_SUB,
+        TK.TICKET_STATE_ID,
+        TK.CREATE_TIME,
+        TK.CHANGE_TIME,
+        TK.PROCESS_DATE,
+        TK.REF_TICKET_ID,
+        TK.COMMENTS,
+        TK.TICKET_PRIORITY_ID,
+
+        /* 🔑 Incremental Refresh column (Power BI partitioning) */
+        CASE
+            WHEN TK.PROCESS_DATE = 19990101
+                THEN SYSDATE
+            ELSE
+                TO_DATE(TK.PROCESS_DATE, 'YYYYMMDD')
+        END AS IR_DATE
+
+    FROM FDEMS_FDMS.TICKET TK
+    CROSS JOIN params p
+    WHERE
+        (
+            /* OPEN tickets */
+            TK.PROCESS_DATE = 19990101
+
+            OR
+
+            /* CLOSED tickets – numeric partition pruning */
+            (
+                TK.PROCESS_DATE <> 19990101
+                AND TK.PROCESS_DATE >= p.RS_NUM
+                AND TK.PROCESS_DATE <  p.RE_NUM
+            )
+        )
+),
+
+article_counts AS (
+    SELECT
+        a.ticket_id,
+        COUNT(CASE WHEN a.article_sender_type_id = 3 THEN 1 END) AS incoming_count,
+        COUNT(CASE WHEN a.article_sender_type_id = 1
+                   AND a.communication_channel_id <> 3 THEN 1 END) AS outgoing_count
+    FROM FDEMS_FDMS.ARTICLE a
+    CROSS JOIN params p
+    WHERE a.article_sender_type_id IN (1, 3)
+
+      /* 🔑 ARTICLE partition pruning */
+      AND (
+            a.PROCESS_DATE = 19990101
+            OR
+            (
+                a.PROCESS_DATE <> 19990101
+                AND a.PROCESS_DATE >= p.RS_NUM
+                AND a.PROCESS_DATE <  p.RE_NUM
+            )
+          )
+
+      /* 🔗 Only articles belonging to selected tickets */
+      AND EXISTS (
+          SELECT 1
+          FROM tickets_base t
+          WHERE t.ID = a.ticket_id
+      )
+    GROUP BY a.ticket_id
+)
+
+SELECT
+    tb.TN,
+    tb.TITLE,
+    tb.QUEUE_ID,
+    q.NAME AS QUEUE_NAME,
+    tb.CUSTOMER_ID,
+    u.LOGIN AS USER_ID,
+    TRIM(u.FIRST_NAME || ' ' || u.LAST_NAME) AS USER_NAME,
+    tr.NAME AS UNIT,
+    tb.TAG_ID,
+    tb.TAG_ID_QUERY,
+    SUBSTR(tq.NAME, INSTR(tq.NAME, '::') + 2) AS QUERY_TYPE,
+    SUBSTR(tsq.NAME, INSTR(tsq.NAME, '::', -1) + 2) AS SUB_QUERY_TYPE,
+    tb.TICKET_STATE_ID,
+    ts.NAME AS TICKET_STATUS,
+    tst.NAME AS CASE_STATUS,
+    tb.CREATE_TIME,
+    tb.CHANGE_TIME,
+    tb.PROCESS_DATE,
+
+    /* Age in hours */
+    ROUND((tb.CHANGE_TIME - tb.CREATE_TIME) * 24, 2) AS AGE_HOURS,
+
+    /* Aging bucket */
+    CASE
+        WHEN ((tb.CHANGE_TIME - tb.CREATE_TIME) * 24) <= 1  THEN '00-01 Hrs'
+        WHEN ((tb.CHANGE_TIME - tb.CREATE_TIME) * 24) <= 4  THEN '01-04 Hrs'
+        WHEN ((tb.CHANGE_TIME - tb.CREATE_TIME) * 24) <= 8  THEN '04-08 Hrs'
+        WHEN ((tb.CHANGE_TIME - tb.CREATE_TIME) * 24) <= 12 THEN '08-12 Hrs'
+        WHEN ((tb.CHANGE_TIME - tb.CREATE_TIME) * 24) <= 24 THEN '12-24 Hrs'
+        WHEN ((tb.CHANGE_TIME - tb.CREATE_TIME) * 24) <= 48 THEN '24-48 Hrs'
+        WHEN ((tb.CHANGE_TIME - tb.CREATE_TIME) * 24) <= 72 THEN '48-72 Hrs'
+        ELSE '>72 Hrs'
+    END AS AGING_BUCKET,
+
+    tkref.TN AS REF_TN,
+    tb.COMMENTS,
+    tp.NAME AS PRIORITY,
+    NVL(ac.incoming_count, 0) AS incoming_count,
+    NVL(ac.outgoing_count, 0) AS outgoing_count,
+
+    /* Optional – keep for debugging */
+    tb.IR_DATE
+
+FROM tickets_base tb
+JOIN FDEMS_FDMS.TICKET_STATE ts
+  ON ts.ID = tb.TICKET_STATE_ID
+JOIN FDEMS_FDMS.TICKET_STATE_TYPE tst
+  ON ts.TYPE_ID = tst.ID
+ AND tst.ID NOT IN (6, 7)
+JOIN FDEMS_FDMS.QUEUE q
+  ON q.ID = tb.QUEUE_ID
+JOIN FDEMS_FDMS.USERS u
+  ON u.ID = tb.USER_ID
+LEFT JOIN FDEMS_FDMS.TAG tr
+  ON tr.ID = tb.TAG_ID
+LEFT JOIN FDEMS_FDMS.TAG tq
+  ON tq.ID = tb.TAG_ID_QUERY
+LEFT JOIN FDEMS_FDMS.TAG tsq
+  ON tsq.ID = tb.TAG_ID_SUB
+LEFT JOIN FDEMS_FDMS.TICKET tkref
+  ON tkref.ID = tb.REF_TICKET_ID
+LEFT JOIN FDEMS_FDMS.TICKET_PRIORITY tp
+  ON tp.ID = tb.TICKET_PRIORITY_ID
+LEFT JOIN article_counts ac
+  ON ac.ticket_id = tb.ID;
